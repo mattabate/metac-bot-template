@@ -4,6 +4,7 @@ import logging
 import os
 from datetime import datetime
 from typing import Literal
+from dotenv import load_dotenv
 
 from forecasting_tools import (
     AskNewsSearcher,
@@ -21,6 +22,8 @@ from forecasting_tools import (
     SmartSearcher,
     clean_indents,
 )
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +61,9 @@ class TemplateForecaster(ForecastBot):
     Additionally OpenRouter has large rate limits immediately on account creation
     """
 
-    _max_concurrent_questions = 2  # Set this to whatever works for your search-provider/ai-model rate limits
+    _max_concurrent_questions = (
+        2  # Set this to whatever works for your search-provider/ai-model rate limits
+    )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
 
     async def run_research(self, question: MetaculusQuestion) -> str:
@@ -69,9 +74,7 @@ class TemplateForecaster(ForecastBot):
                     question.question_text
                 )
             elif os.getenv("EXA_API_KEY"):
-                research = await self._call_exa_smart_searcher(
-                    question.question_text
-                )
+                research = await self._call_exa_smart_searcher(question.question_text)
             elif os.getenv("PERPLEXITY_API_KEY"):
                 research = await self._call_perplexity(question.question_text)
             elif os.getenv("OPENROUTER_API_KEY"):
@@ -83,9 +86,7 @@ class TemplateForecaster(ForecastBot):
                     f"No research provider found when processing question URL {question.page_url}. Will pass back empty string."
                 )
                 research = ""
-            logger.info(
-                f"Found Research for URL {question.page_url}:\n{research}"
-            )
+            logger.info(f"Found Research for URL {question.page_url}:\n{research}")
             return research
 
     async def _call_perplexity(
@@ -176,9 +177,7 @@ class TemplateForecaster(ForecastBot):
         logger.info(
             f"Forecasted URL {question.page_url} as {prediction} with reasoning:\n{reasoning}"
         )
-        return ReasonedPrediction(
-            prediction_value=prediction, reasoning=reasoning
-        )
+        return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
 
     async def _run_forecast_on_multiple_choice(
         self, question: MultipleChoiceQuestion, research: str
@@ -229,9 +228,7 @@ class TemplateForecaster(ForecastBot):
         logger.info(
             f"Forecasted URL {question.page_url} as {prediction} with reasoning:\n{reasoning}"
         )
-        return ReasonedPrediction(
-            prediction_value=prediction, reasoning=reasoning
-        )
+        return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
 
     async def _run_forecast_on_numeric(
         self, question: NumericQuestion, research: str
@@ -298,9 +295,7 @@ class TemplateForecaster(ForecastBot):
         logger.info(
             f"Forecasted URL {question.page_url} as {prediction.declared_percentiles} with reasoning:\n{reasoning}"
         )
-        return ReasonedPrediction(
-            prediction_value=prediction, reasoning=reasoning
-        )
+        return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
 
     def _create_upper_and_lower_bound_messages(
         self, question: NumericQuestion
@@ -342,9 +337,7 @@ if __name__ == "__main__":
         help="Specify the run mode (default: tournament)",
     )
     args = parser.parse_args()
-    run_mode: Literal["tournament", "quarterly_cup", "test_questions"] = (
-        args.mode
-    )
+    run_mode: Literal["tournament", "quarterly_cup", "test_questions"] = args.mode
     assert run_mode in [
         "tournament",
         "quarterly_cup",
