@@ -24,9 +24,7 @@ from prompts import (
 # Constants
 SUBMIT_PREDICTION = True  # set to True to publish your predictions to Metaculus
 USE_EXAMPLE_QUESTIONS = False  # set to True to forecast example questions rather than the tournament questions
-NUM_RUNS_PER_QUESTION = (
-    5  # The median forecast is taken between NUM_RUNS_PER_QUESTION runs
-)
+NUM_RUNS_PER_QUESTION = 3  # The median/average forecast is taken between NUM_RUNS_PER_QUESTION runs (each with independent research)
 SKIP_PREVIOUSLY_FORECASTED_QUESTIONS = True
 
 # Environment variables
@@ -210,30 +208,23 @@ def list_posts_from_general(offset: int = 0, count: int = 50) -> list[dict]:
 
 def get_open_question_ids_from_tournament() -> list[tuple[int, int]]:
     posts = list_posts_from_tournament()
-    print(json.dumps(posts, indent=2)[:800])
     post_dict = dict()
     for post in posts["results"]:
         if question := post.get("question"):
             # single question post
             post_dict[post["id"]] = [question]
-            print(
-                f"DEBUG: Found question {question['id']} with status: {question.get('status')}"
-            )
 
     open_question_id_post_id = []  # [(question_id, post_id)]
     for post_id, questions in post_dict.items():
         for question in questions:
-            print(
-                f"DEBUG: Checking question {question['id']} - status: {question.get('status')}"
-            )
             if question.get("status") == "open":
                 print(
-                    f"ID: {question['id']}\nQ: {question['title']}\nCloses: "
+                    f"Found open question - ID: {question['id']}\nQ: {question['title']}\nCloses: "
                     f"{question['scheduled_close_time']}"
                 )
                 open_question_id_post_id.append((question["id"], post_id))
 
-    print(f"DEBUG  •  pulled {len(open_question_id_post_id)} open questions")
+    print(f"Found {len(open_question_id_post_id)} open questions")
 
     if len(open_question_id_post_id) == 0:
         print(
@@ -269,14 +260,8 @@ def get_open_question_ids_from_tournament() -> list[tuple[int, int]]:
             )
             try:
                 posts = list_posts_from_general()
-                print(
-                    f"DEBUG: General posts response: {json.dumps(posts, indent=2)[:1000]}"
-                )
                 for post in posts["results"]:
                     if question := post.get("question"):
-                        print(
-                            f"DEBUG: General question {question['id']} - status: {question.get('status')}"
-                        )
                         if question.get("status") == "open":
                             print(
                                 f"Found general question - ID: {question['id']}\nQ: {question['title']}\nCloses: "
@@ -289,13 +274,15 @@ def get_open_question_ids_from_tournament() -> list[tuple[int, int]]:
                                 len(open_question_id_post_id) >= 3
                             ):  # Limit to 3 questions for testing
                                 break
-                # If still no open questions, let's try without the status filter for debugging
+                # If still no open questions, try any status for testing
                 if len(open_question_id_post_id) == 0:
-                    print("DEBUG: No open questions found, trying any status...")
+                    print(
+                        "No open questions found, trying questions with any status..."
+                    )
                     for post in posts["results"][:3]:  # Just first 3 for testing
                         if question := post.get("question"):
                             print(
-                                f"DEBUG: Found question (any status) - ID: {question['id']}\nQ: {question['title']}\nStatus: {question.get('status')}"
+                                f"Found question - ID: {question['id']}\nQ: {question['title']}\nStatus: {question.get('status')}"
                             )
                             open_question_id_post_id.append(
                                 (question["id"], post["id"])
@@ -356,14 +343,55 @@ async def call_llm(prompt: str, model: str = "gpt-4o", temperature: float = 0.3)
         return answer
 
 
-async def run_research(question: str) -> str:
-    research = await async_call_research(question)
+async def run_research(question: str, max_retries: int = 2) -> str:
+    """
+    Run research with timeout and retry mechanism.
+    Will timeout after 35 minutes and retry up to max_retries times.
+    """
+    timeout_minutes = 35
+    timeout_seconds = timeout_minutes * 60
 
-    print(
-        f"########################\nResearch Found:\n{research}\n########################"
-    )
+    for attempt in range(max_retries + 1):
+        try:
+            print(
+                f"Starting research attempt {attempt + 1}/{max_retries + 1} (timeout: {timeout_minutes} minutes)"
+            )
 
-    return research
+            # Use asyncio.wait_for to add timeout
+            research = await asyncio.wait_for(
+                async_call_research(question), timeout=timeout_seconds
+            )
+
+            print(
+                f"########################\nResearch Found:\n{research}\n########################"
+            )
+
+            return research
+
+        except asyncio.TimeoutError:
+            print(
+                f"Research attempt {attempt + 1} timed out after {timeout_minutes} minutes"
+            )
+
+            if attempt < max_retries:
+                print(f"Retrying research... (attempt {attempt + 2}/{max_retries + 1})")
+                # Small delay before retry
+                await asyncio.sleep(5)
+            else:
+                print(
+                    "All research attempts failed due to timeout. Returning fallback message."
+                )
+                return "Research timed out after multiple attempts. No additional research data available."
+
+        except Exception as e:
+            print(f"Research attempt {attempt + 1} failed with error: {e}")
+
+            if attempt < max_retries:
+                print(f"Retrying research... (attempt {attempt + 2}/{max_retries + 1})")
+                await asyncio.sleep(5)
+            else:
+                print("All research attempts failed. Returning fallback message.")
+                return f"Research failed after multiple attempts. Error: {str(e)}"
 
 
 ############### BINARY ###############
@@ -385,9 +413,13 @@ def extract_probability_from_response_as_percentage_not_decimal(
         raise ValueError(f"Could not extract prediction from response: {forecast_text}")
 
 
-async def get_binary_gpt_prediction(
-    question_details: dict, num_runs: int
+async def get_single_binary_prediction(
+    question_details: dict, run_number: int
 ) -> tuple[float, str]:
+    """
+    Get a single binary prediction with its own research.
+    """
+    print(f"Starting binary prediction run {run_number}...")
 
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     title = question_details["title"]
@@ -395,15 +427,21 @@ async def get_binary_gpt_prediction(
     background = question_details["description"]
     fine_print = question_details["fine_print"]
 
-    summary_report = await run_research(
-        BINARY_PROMPT_TEMPLATE_RESEARCH.format(
-            title=title,
-            today=today,
-            background=background,
-            resolution_criteria=resolution_criteria,
-            fine_print=fine_print,
+    # Do research for this specific prediction (with independent timeout/retry)
+    try:
+        summary_report = await run_research(
+            BINARY_PROMPT_TEMPLATE_RESEARCH.format(
+                title=title,
+                today=today,
+                background=background,
+                resolution_criteria=resolution_criteria,
+                fine_print=fine_print,
+            )
         )
-    )
+        print(f"Research completed for binary prediction run {run_number}")
+    except Exception as e:
+        print(f"Research failed for binary prediction run {run_number}: {e}")
+        summary_report = f"Research failed for this run: {str(e)}"
 
     content = BINARY_PROMPT_TEMPLATE.format(
         title=title,
@@ -414,30 +452,58 @@ async def get_binary_gpt_prediction(
         summary_report=summary_report,
     )
 
-    async def get_rationale_and_probability(content: str) -> tuple[float, str]:
-        rationale = await call_llm(content)
+    rationale = await call_llm(content)
+    probability = extract_probability_from_response_as_percentage_not_decimal(rationale)
 
-        probability = extract_probability_from_response_as_percentage_not_decimal(
-            rationale
-        )
-        comment = (
-            f"Extracted Probability: {probability}%\n\nGPT's Answer: "
-            f"{rationale}\n\n\n"
-        )
-        return probability, comment
-
-    probability_and_comment_pairs = await asyncio.gather(
-        *[get_rationale_and_probability(content) for _ in range(num_runs)]
+    comment = (
+        f"Run {run_number} - Extracted Probability: {probability}%\n\nGPT's Answer: "
+        f"{rationale}\n\n\n"
     )
-    comments = [pair[1] for pair in probability_and_comment_pairs]
-    final_comment_sections = [
-        f"## Rationale {i+1}\n{comment}" for i, comment in enumerate(comments)
+    print(f"Completed binary prediction run {run_number}: {probability}%")
+    return probability, comment
+
+
+async def get_binary_gpt_prediction(
+    question_details: dict, num_runs: int
+) -> tuple[float, str]:
+    """
+    Get binary prediction by running research + prediction num_runs times in parallel and taking median.
+    """
+    print(f"Running {num_runs} parallel research + prediction cycles...")
+
+    # Run independent research + prediction cycles in parallel
+    prediction_tasks = [
+        get_single_binary_prediction(question_details, i + 1) for i in range(num_runs)
     ]
-    probabilities = [pair[0] for pair in probability_and_comment_pairs]
+    probability_and_comment_pairs = await asyncio.gather(
+        *prediction_tasks, return_exceptions=True
+    )
+
+    # Handle any exceptions and filter successful results
+    successful_results = []
+    comments = []
+
+    for i, result in enumerate(probability_and_comment_pairs):
+        if isinstance(result, Exception):
+            print(f"Binary prediction run {i+1} failed: {result}")
+            comments.append(f"Run {i+1} failed: {str(result)}")
+        else:
+            successful_results.append(result)
+            comments.append(result[1])
+
+    if not successful_results:
+        raise RuntimeError("All binary prediction runs failed")
+
+    final_comment_sections = [
+        f"## Research + Prediction Run {i+1}\n{comment}"
+        for i, comment in enumerate(comments)
+    ]
+    probabilities = [pair[0] for pair in successful_results]
     median_probability = float(np.median(probabilities)) / 100
 
-    final_comment = f"Median Probability: {median_probability}\n\n" + "\n\n".join(
-        final_comment_sections
+    final_comment = (
+        f"Median Probability: {median_probability} (from {len(successful_results)}/{num_runs} successful runs)\n\n"
+        + "\n\n".join(final_comment_sections)
     )
     return median_probability, final_comment
 
@@ -599,9 +665,13 @@ def generate_continuous_cdf(
     return continuous_cdf
 
 
-async def get_numeric_gpt_prediction(
-    question_details: dict, num_runs: int
+async def get_single_numeric_prediction(
+    question_details: dict, run_number: int
 ) -> tuple[list[float], str]:
+    """
+    Get a single numeric prediction with its own research.
+    """
+    print(f"Starting numeric prediction run {run_number}...")
 
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     title = question_details["title"]
@@ -631,18 +701,24 @@ async def get_numeric_gpt_prediction(
     else:
         lower_bound_message = f"The outcome can not be lower than {lower_bound}."
 
-    summary_report = await run_research(
-        NUMERIC_PROMPT_TEMPLATE_RESEARCH.format(
-            title=title,
-            today=today,
-            background=background,
-            resolution_criteria=resolution_criteria,
-            fine_print=fine_print,
-            lower_bound_message=lower_bound_message,
-            upper_bound_message=upper_bound_message,
-            units=unit_of_measure,
+    # Do research for this specific prediction (with independent timeout/retry)
+    try:
+        summary_report = await run_research(
+            NUMERIC_PROMPT_TEMPLATE_RESEARCH.format(
+                title=title,
+                today=today,
+                background=background,
+                resolution_criteria=resolution_criteria,
+                fine_print=fine_print,
+                lower_bound_message=lower_bound_message,
+                upper_bound_message=upper_bound_message,
+                units=unit_of_measure,
+            )
         )
-    )
+        print(f"Research completed for numeric prediction run {run_number}")
+    except Exception as e:
+        print(f"Research failed for numeric prediction run {run_number}: {e}")
+        summary_report = f"Research failed for this run: {str(e)}"
 
     content = NUMERIC_PROMPT_TEMPLATE.format(
         title=title,
@@ -656,40 +732,70 @@ async def get_numeric_gpt_prediction(
         units=unit_of_measure,
     )
 
-    async def ask_llm_to_get_cdf(content: str) -> tuple[list[float], str]:
-        rationale = await call_llm(content)
-        percentile_values = extract_percentiles_from_response(rationale)
+    rationale = await call_llm(content)
+    percentile_values = extract_percentiles_from_response(rationale)
 
-        comment = (
-            f"Extracted Percentile_values: {percentile_values}\n\nGPT's Answer: "
-            f"{rationale}\n\n\n"
-        )
-
-        cdf = generate_continuous_cdf(
-            percentile_values,
-            question_type,
-            open_upper_bound,
-            open_lower_bound,
-            upper_bound,
-            lower_bound,
-            zero_point,
-        )
-
-        return cdf, comment
-
-    cdf_and_comment_pairs = await asyncio.gather(
-        *[ask_llm_to_get_cdf(content) for _ in range(num_runs)]
+    comment = (
+        f"Run {run_number} - Extracted Percentile_values: {percentile_values}\n\nGPT's Answer: "
+        f"{rationale}\n\n\n"
     )
-    comments = [pair[1] for pair in cdf_and_comment_pairs]
-    final_comment_sections = [
-        f"## Rationale {i+1}\n{comment}" for i, comment in enumerate(comments)
+
+    cdf = generate_continuous_cdf(
+        percentile_values,
+        question_type,
+        open_upper_bound,
+        open_lower_bound,
+        upper_bound,
+        lower_bound,
+        zero_point,
+    )
+
+    print(f"Completed numeric prediction run {run_number}")
+    return cdf, comment
+
+
+async def get_numeric_gpt_prediction(
+    question_details: dict, num_runs: int
+) -> tuple[list[float], str]:
+    """
+    Get numeric prediction by running research + prediction num_runs times in parallel and taking median.
+    """
+    print(f"Running {num_runs} parallel research + prediction cycles...")
+
+    # Run independent research + prediction cycles in parallel
+    prediction_tasks = [
+        get_single_numeric_prediction(question_details, i + 1) for i in range(num_runs)
     ]
-    cdfs: list[list[float]] = [pair[0] for pair in cdf_and_comment_pairs]
+    cdf_and_comment_pairs = await asyncio.gather(
+        *prediction_tasks, return_exceptions=True
+    )
+
+    # Handle any exceptions and filter successful results
+    successful_results = []
+    comments = []
+
+    for i, result in enumerate(cdf_and_comment_pairs):
+        if isinstance(result, Exception):
+            print(f"Numeric prediction run {i+1} failed: {result}")
+            comments.append(f"Run {i+1} failed: {str(result)}")
+        else:
+            successful_results.append(result)
+            comments.append(result[1])
+
+    if not successful_results:
+        raise RuntimeError("All numeric prediction runs failed")
+
+    final_comment_sections = [
+        f"## Research + Prediction Run {i+1}\n{comment}"
+        for i, comment in enumerate(comments)
+    ]
+    cdfs: list[list[float]] = [pair[0] for pair in successful_results]
     all_cdfs = np.array(cdfs)
     median_cdf: list[float] = np.median(all_cdfs, axis=0).tolist()
 
-    final_comment = f"Median CDF: `{str(median_cdf)[:100]}...`\n\n" + "\n\n".join(
-        final_comment_sections
+    final_comment = (
+        f"Median CDF: `{str(median_cdf)[:100]}...` (from {len(successful_results)}/{num_runs} successful runs)\n\n"
+        + "\n\n".join(final_comment_sections)
     )
     return median_cdf, final_comment
 
@@ -775,10 +881,13 @@ def generate_multiple_choice_forecast(options, option_probabilities) -> dict:
     return probability_yes_per_category
 
 
-async def get_multiple_choice_gpt_prediction(
-    question_details: dict,
-    num_runs: int,
+async def get_single_multiple_choice_prediction(
+    question_details: dict, run_number: int
 ) -> tuple[dict[str, float], str]:
+    """
+    Get a single multiple choice prediction with its own research.
+    """
+    print(f"Starting multiple choice prediction run {run_number}...")
 
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     title = question_details["title"]
@@ -787,16 +896,22 @@ async def get_multiple_choice_gpt_prediction(
     fine_print = question_details["fine_print"]
     options = question_details["options"]
 
-    summary_report = await run_research(
-        MULTIPLE_CHOICE_PROMPT_TEMPLATE_RESEARCH.format(
-            title=title,
-            today=today,
-            background=background,
-            resolution_criteria=resolution_criteria,
-            fine_print=fine_print,
-            options=options,
+    # Do research for this specific prediction (with independent timeout/retry)
+    try:
+        summary_report = await run_research(
+            MULTIPLE_CHOICE_PROMPT_TEMPLATE_RESEARCH.format(
+                title=title,
+                today=today,
+                background=background,
+                resolution_criteria=resolution_criteria,
+                fine_print=fine_print,
+                options=options,
+            )
         )
-    )
+        print(f"Research completed for multiple choice prediction run {run_number}")
+    except Exception as e:
+        print(f"Research failed for multiple choice prediction run {run_number}: {e}")
+        summary_report = f"Research failed for this run: {str(e)}"
 
     content = MULTIPLE_CHOICE_PROMPT_TEMPLATE.format(
         title=title,
@@ -808,35 +923,67 @@ async def get_multiple_choice_gpt_prediction(
         options=options,
     )
 
-    async def ask_llm_for_multiple_choice_probabilities(
-        content: str,
-    ) -> tuple[dict[str, float], str]:
-        rationale = await call_llm(content)
-
-        option_probabilities = extract_option_probabilities_from_response(
-            rationale, options
-        )
-
-        comment = (
-            f"EXTRACTED_PROBABILITIES: {option_probabilities}\n\nGPT's Answer: "
-            f"{rationale}\n\n\n"
-        )
-
-        probability_yes_per_category = generate_multiple_choice_forecast(
-            options, option_probabilities
-        )
-        return probability_yes_per_category, comment
-
-    probability_yes_per_category_and_comment_pairs = await asyncio.gather(
-        *[ask_llm_for_multiple_choice_probabilities(content) for _ in range(num_runs)]
+    rationale = await call_llm(content)
+    option_probabilities = extract_option_probabilities_from_response(
+        rationale, options
     )
-    comments = [pair[1] for pair in probability_yes_per_category_and_comment_pairs]
+
+    comment = (
+        f"Run {run_number} - EXTRACTED_PROBABILITIES: {option_probabilities}\n\nGPT's Answer: "
+        f"{rationale}\n\n\n"
+    )
+
+    probability_yes_per_category = generate_multiple_choice_forecast(
+        options, option_probabilities
+    )
+    print(f"Completed multiple choice prediction run {run_number}")
+    return probability_yes_per_category, comment
+
+
+async def get_multiple_choice_gpt_prediction(
+    question_details: dict,
+    num_runs: int,
+) -> tuple[dict[str, float], str]:
+    """
+    Get multiple choice prediction by running research + prediction num_runs times in parallel and taking average.
+    """
+    print(f"Running {num_runs} parallel research + prediction cycles...")
+
+    options = question_details["options"]
+
+    # Run independent research + prediction cycles in parallel
+    prediction_tasks = [
+        get_single_multiple_choice_prediction(question_details, i + 1)
+        for i in range(num_runs)
+    ]
+    probability_yes_per_category_and_comment_pairs = await asyncio.gather(
+        *prediction_tasks, return_exceptions=True
+    )
+
+    # Handle any exceptions and filter successful results
+    successful_results = []
+    comments = []
+
+    for i, result in enumerate(probability_yes_per_category_and_comment_pairs):
+        if isinstance(result, Exception):
+            print(f"Multiple choice prediction run {i+1} failed: {result}")
+            comments.append(f"Run {i+1} failed: {str(result)}")
+        else:
+            successful_results.append(result)
+            comments.append(result[1])
+
+    if not successful_results:
+        raise RuntimeError("All multiple choice prediction runs failed")
+
     final_comment_sections = [
-        f"## Rationale {i+1}\n{comment}" for i, comment in enumerate(comments)
+        f"## Research + Prediction Run {i+1}\n{comment}"
+        for i, comment in enumerate(comments)
     ]
     probability_yes_per_category_dicts: list[dict[str, float]] = [
-        pair[0] for pair in probability_yes_per_category_and_comment_pairs
+        pair[0] for pair in successful_results
     ]
+
+    # Calculate average probabilities across all successful runs
     average_probability_yes_per_category: dict[str, float] = {}
     for option in options:
         probabilities_for_current_option: list[float] = [
@@ -847,7 +994,7 @@ async def get_multiple_choice_gpt_prediction(
         ) / len(probabilities_for_current_option)
 
     final_comment = (
-        f"Average Probability Yes Per Category: `{average_probability_yes_per_category}`\n\n"
+        f"Average Probability Yes Per Category: `{average_probability_yes_per_category}` (from {len(successful_results)}/{num_runs} successful runs)\n\n"
         + "\n\n".join(final_comment_sections)
     )
     return average_probability_yes_per_category, final_comment
