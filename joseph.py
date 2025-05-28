@@ -5,7 +5,7 @@ from pyppeteer import launch
 async def call_research(question: str) -> str:
     browser = None
     try:
-        browser = await launch(headless=False)
+        browser = await launch(headless=True)
         page = await browser.newPage()
         await page.goto("https://research.joseph.ma/")
 
@@ -21,11 +21,11 @@ async def call_research(question: str) -> str:
             )
             if not button_disabled:
                 break
-            
+
             # Add timeout for button wait
             if asyncio.get_event_loop().time() - button_wait_start > 60:
                 raise TimeoutError("Button never became enabled")
-            
+
             await asyncio.sleep(0.5)
 
         await page.click('form button[aria-label="Start Research"]')
@@ -35,7 +35,7 @@ async def call_research(question: str) -> str:
         # Wait for completion with periodic status updates
         research_start_time = asyncio.get_event_loop().time()
         last_status_update = research_start_time
-        
+
         while True:
             try:
                 await page.waitForSelector(status_selector, timeout=10)
@@ -47,22 +47,24 @@ async def call_research(question: str) -> str:
                     }}
                 """
                 )
-                
+
                 current_time = asyncio.get_event_loop().time()
-                
+
                 # Print status updates every 2 minutes
                 if current_time - last_status_update > 120:
                     elapsed_minutes = int((current_time - research_start_time) / 60)
-                    print(f"Research in progress... Status: {status_text} (elapsed: {elapsed_minutes} minutes)")
+                    print(
+                        f"Research in progress... Status: {status_text} (elapsed: {elapsed_minutes} minutes)"
+                    )
                     last_status_update = current_time
-                
+
                 if status_text and "Done!" in status_text:
                     break
-                    
+
             except asyncio.TimeoutError:
                 # Continue if selector not found
                 pass
-            
+
             await asyncio.sleep(2)
 
         await asyncio.sleep(5)
@@ -93,8 +95,12 @@ async def call_research(question: str) -> str:
                 # Force kill any remaining browser processes
                 try:
                     import psutil
-                    for proc in psutil.process_iter(['pid', 'name']):
-                        if 'chrome' in proc.info['name'].lower() or 'chromium' in proc.info['name'].lower():
+
+                    for proc in psutil.process_iter(["pid", "name"]):
+                        if (
+                            "chrome" in proc.info["name"].lower()
+                            or "chromium" in proc.info["name"].lower()
+                        ):
                             try:
                                 proc.kill()
                             except:
