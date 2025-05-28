@@ -10,9 +10,15 @@ dotenv.load_dotenv()
 from openai import AsyncOpenAI
 import numpy as np
 import requests
-import forecasting_tools
-from asknews_sdk import AskNewsSDK
-
+from joseph import async_call_research
+from prompts import (
+    BINARY_PROMPT_TEMPLATE,
+    BINARY_PROMPT_TEMPLATE_RESEARCH,
+    NUMERIC_PROMPT_TEMPLATE,
+    NUMERIC_PROMPT_TEMPLATE_RESEARCH,
+    MULTIPLE_CHOICE_PROMPT_TEMPLATE,
+    MULTIPLE_CHOICE_PROMPT_TEMPLATE_RESEARCH,
+)
 
 ######################### CONSTANTS #########################
 # Constants
@@ -248,8 +254,8 @@ async def call_llm(prompt: str, model: str = "gpt-4o", temperature: float = 0.3)
         return answer
 
 
-def run_research(question: str) -> str:
-    research = call_research(question)
+async def run_research(question: str) -> str:
+    research = await async_call_research(question)
 
     print(
         f"########################\nResearch Found:\n{research}\n########################"
@@ -258,46 +264,10 @@ def run_research(question: str) -> str:
     return research
 
 
-def call_research(question: str) -> str:
-    pass
-
-
 ############### BINARY ###############
 # @title Binary prompt & functions
 
 # This section includes functionality for binary questions.
-
-BINARY_PROMPT_TEMPLATE = """
-You are a professional forecaster interviewing for a job.
-
-Your interview question is:
-{title}
-
-Question background:
-{background}
-
-
-This question's outcome will be determined by the specific criteria below. These criteria have not yet been satisfied:
-{resolution_criteria}
-
-{fine_print}
-
-
-Your research assistant says:
-{summary_report}
-
-Today is {today}.
-
-Before answering you write:
-(a) The time left until the outcome to the question is known.
-(b) The status quo outcome if nothing changed.
-(c) A brief description of a scenario that results in a No outcome.
-(d) A brief description of a scenario that results in a Yes outcome.
-
-You write your rationale remembering that good forecasters put extra weight on the status quo outcome since the world changes slowly most of the time.
-
-The last thing you write is your final answer as: "Probability: ZZ%", 0-100
-"""
 
 
 def extract_probability_from_response_as_percentage_not_decimal(
@@ -322,10 +292,18 @@ async def get_binary_gpt_prediction(
     resolution_criteria = question_details["resolution_criteria"]
     background = question_details["description"]
     fine_print = question_details["fine_print"]
-    question_type = question_details["type"]
-    print("cc")
-    summary_report = run_research(title)
-    print("wut")
+
+    summary_report = await run_research(
+        BINARY_PROMPT_TEMPLATE_RESEARCH.format(
+            title=title,
+            today=today,
+            background=background,
+            resolution_criteria=resolution_criteria,
+            fine_print=fine_print,
+            summary_report=summary_report,
+        )
+    )
+
     content = BINARY_PROMPT_TEMPLATE.format(
         title=title,
         today=today,
@@ -365,56 +343,6 @@ async def get_binary_gpt_prediction(
 
 ####################### NUMERIC ###############
 # @title Numeric prompt & functions
-
-NUMERIC_PROMPT_TEMPLATE = """
-You are a professional forecaster interviewing for a job.
-
-Your interview question is:
-{title}
-
-Background:
-{background}
-
-{resolution_criteria}
-
-{fine_print}
-
-Units for answer: {units}
-
-Your research assistant says:
-{summary_report}
-
-Today is {today}.
-
-{lower_bound_message}
-{upper_bound_message}
-
-
-Formatting Instructions:
-- Please notice the units requested (e.g. whether you represent a number as 1,000,000 or 1m).
-- Never use scientific notation.
-- Always start with a smaller number (more negative if negative) and then increase from there
-
-Before answering you write:
-(a) The time left until the outcome to the question is known.
-(b) The outcome if nothing changed.
-(c) The outcome if the current trend continued.
-(d) The expectations of experts and markets.
-(e) A brief description of an unexpected scenario that results in a low outcome.
-(f) A brief description of an unexpected scenario that results in a high outcome.
-
-You remind yourself that good forecasters are humble and set wide 90/10 confidence intervals to account for unknown unkowns.
-
-The last thing you write is your final answer as:
-"
-Percentile 10: XX
-Percentile 20: XX
-Percentile 40: XX
-Percentile 60: XX
-Percentile 80: XX
-Percentile 90: XX
-"
-"""
 
 
 def extract_percentiles_from_response(forecast_text: str) -> dict:
@@ -602,7 +530,18 @@ async def get_numeric_gpt_prediction(
     else:
         lower_bound_message = f"The outcome can not be lower than {lower_bound}."
 
-    summary_report = run_research(title)
+    summary_report = await run_research(
+        NUMERIC_PROMPT_TEMPLATE_RESEARCH.format(
+            title=title,
+            today=today,
+            background=background,
+            resolution_criteria=resolution_criteria,
+            fine_print=fine_print,
+            lower_bound_message=lower_bound_message,
+            upper_bound_message=upper_bound_message,
+            units=unit_of_measure,
+        )
+    )
 
     content = NUMERIC_PROMPT_TEMPLATE.format(
         title=title,
@@ -656,42 +595,6 @@ async def get_numeric_gpt_prediction(
 
 ########################## MULTIPLE CHOICE ###############
 # @title Multiple Choice prompt & functions
-
-MULTIPLE_CHOICE_PROMPT_TEMPLATE = """
-You are a professional forecaster interviewing for a job.
-
-Your interview question is:
-{title}
-
-The options are: {options}
-
-
-Background:
-{background}
-
-{resolution_criteria}
-
-{fine_print}
-
-
-Your research assistant says:
-{summary_report}
-
-Today is {today}.
-
-Before answering you write:
-(a) The time left until the outcome to the question is known.
-(b) The status quo outcome if nothing changed.
-(c) A description of an scenario that results in an unexpected outcome.
-
-You write your rationale remembering that (1) good forecasters put extra weight on the status quo outcome since the world changes slowly most of the time, and (2) good forecasters leave some moderate probability on most options to account for unexpected outcomes.
-
-The last thing you write is your final probabilities for the N options in this order {options} as:
-Option_A: Probability_A
-Option_B: Probability_B
-...
-Option_N: Probability_N
-"""
 
 
 def extract_option_probabilities_from_response(forecast_text: str, options) -> float:
@@ -781,10 +684,18 @@ async def get_multiple_choice_gpt_prediction(
     resolution_criteria = question_details["resolution_criteria"]
     background = question_details["description"]
     fine_print = question_details["fine_print"]
-    question_type = question_details["type"]
     options = question_details["options"]
 
-    summary_report = run_research(title)
+    summary_report = await run_research(
+        MULTIPLE_CHOICE_PROMPT_TEMPLATE_RESEARCH.format(
+            title=title,
+            today=today,
+            background=background,
+            resolution_criteria=resolution_criteria,
+            fine_print=fine_print,
+            options=options,
+        )
+    )
 
     content = MULTIPLE_CHOICE_PROMPT_TEMPLATE.format(
         title=title,
