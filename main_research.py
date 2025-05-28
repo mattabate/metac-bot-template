@@ -22,8 +22,8 @@ from prompts import (
 
 ######################### CONSTANTS #########################
 # Constants
-SUBMIT_PREDICTION = False  # set to True to publish your predictions to Metaculus
-USE_EXAMPLE_QUESTIONS = True  # set to True to forecast example questions rather than the tournament questions
+SUBMIT_PREDICTION = True  # set to True to publish your predictions to Metaculus
+USE_EXAMPLE_QUESTIONS = False  # set to True to forecast example questions rather than the tournament questions
 NUM_RUNS_PER_QUESTION = (
     5  # The median forecast is taken between NUM_RUNS_PER_QUESTION runs
 )
@@ -41,6 +41,7 @@ OPENAI_API_KEY = os.getenv(
 )  # You'll also need the OpenAI API Key if you want to use the Exa Smart Searcher
 
 # The tournament IDs below can be used for testing your bot.
+Q2_2025_AI_BENCHMARKING_ID = 32721
 Q4_2024_AI_BENCHMARKING_ID = 32506
 Q1_2025_AI_BENCHMARKING_ID = 32627
 Q4_2024_QUARTERLY_CUP_ID = 3672
@@ -49,7 +50,7 @@ AXC_2025_TOURNAMENT_ID = 32564
 GIVEWELL_ID = 3600
 RESPIRATORY_OUTLOOK_ID = 3411
 
-TOURNAMENT_ID = Q1_2025_AI_BENCHMARKING_ID
+TOURNAMENT_ID = Q2_2025_AI_BENCHMARKING_ID
 
 # The example questions can be used for testing your bot. (note that question and post id are not always the same)
 EXAMPLE_QUESTIONS = [  # (question_id, post_id)
@@ -102,7 +103,6 @@ def post_question_prediction(question_id: int, forecast_payload: dict) -> None:
     Post a forecast on a question.
     """
     url = f"{API_BASE_URL}/questions/forecast/"
-    return
     response = requests.post(
         url,
         json=[
@@ -181,6 +181,33 @@ def list_posts_from_tournament(
     return data
 
 
+def list_posts_from_general(offset: int = 0, count: int = 50) -> list[dict]:
+    """
+    List (all details) {count} posts from all tournaments (no tournament filter)
+    """
+    url_qparams = {
+        "limit": count,
+        "offset": offset,
+        "order_by": "-hotness",
+        "forecast_type": ",".join(
+            [
+                "binary",
+                "multiple_choice",
+                "numeric",
+            ]
+        ),
+        # Removed "statuses": "open" to see all questions
+        "include_description": "true",
+    }
+    url = f"{API_BASE_URL}/posts/"
+    response = requests.get(url, **AUTH_HEADERS, params=url_qparams)  # type: ignore
+    print(response.status_code, response.headers.get("X-RateLimit-Remaining"))
+    if not response.ok:
+        raise Exception(response.text)
+    data = json.loads(response.content)
+    return data
+
+
 def get_open_question_ids_from_tournament() -> list[tuple[int, int]]:
     posts = list_posts_from_tournament()
     print(json.dumps(posts, indent=2)[:800])
@@ -189,17 +216,92 @@ def get_open_question_ids_from_tournament() -> list[tuple[int, int]]:
         if question := post.get("question"):
             # single question post
             post_dict[post["id"]] = [question]
+            print(
+                f"DEBUG: Found question {question['id']} with status: {question.get('status')}"
+            )
 
     open_question_id_post_id = []  # [(question_id, post_id)]
-    print(f"DEBUG  •  pulled {len(open_question_id_post_id)} open questions")
     for post_id, questions in post_dict.items():
         for question in questions:
+            print(
+                f"DEBUG: Checking question {question['id']} - status: {question.get('status')}"
+            )
             if question.get("status") == "open":
                 print(
                     f"ID: {question['id']}\nQ: {question['title']}\nCloses: "
                     f"{question['scheduled_close_time']}"
                 )
                 open_question_id_post_id.append((question["id"], post_id))
+
+    print(f"DEBUG  •  pulled {len(open_question_id_post_id)} open questions")
+
+    if len(open_question_id_post_id) == 0:
+        print(
+            "No open questions found in the current tournament. Trying other tournaments..."
+        )
+        # Try other tournaments if current one has no questions
+        other_tournaments = [
+            Q1_2025_AI_BENCHMARKING_ID,
+            Q4_2024_AI_BENCHMARKING_ID,
+            Q1_2025_QUARTERLY_CUP_ID,
+        ]
+        for tournament_id in other_tournaments:
+            if tournament_id != TOURNAMENT_ID:
+                print(f"Trying tournament {tournament_id}...")
+                posts = list_posts_from_tournament(tournament_id)
+                for post in posts["results"]:
+                    if question := post.get("question"):
+                        if question.get("status") == "open":
+                            print(
+                                f"Found in tournament {tournament_id} - ID: {question['id']}\nQ: {question['title']}\nCloses: "
+                                f"{question['scheduled_close_time']}"
+                            )
+                            open_question_id_post_id.append(
+                                (question["id"], post["id"])
+                            )
+                if len(open_question_id_post_id) > 0:
+                    break
+
+        # If still no questions, try fetching from general open questions (no tournament filter)
+        if len(open_question_id_post_id) == 0:
+            print(
+                "No open questions found in any tournament. Trying general open questions..."
+            )
+            try:
+                posts = list_posts_from_general()
+                print(
+                    f"DEBUG: General posts response: {json.dumps(posts, indent=2)[:1000]}"
+                )
+                for post in posts["results"]:
+                    if question := post.get("question"):
+                        print(
+                            f"DEBUG: General question {question['id']} - status: {question.get('status')}"
+                        )
+                        if question.get("status") == "open":
+                            print(
+                                f"Found general question - ID: {question['id']}\nQ: {question['title']}\nCloses: "
+                                f"{question['scheduled_close_time']}"
+                            )
+                            open_question_id_post_id.append(
+                                (question["id"], post["id"])
+                            )
+                            if (
+                                len(open_question_id_post_id) >= 3
+                            ):  # Limit to 3 questions for testing
+                                break
+                # If still no open questions, let's try without the status filter for debugging
+                if len(open_question_id_post_id) == 0:
+                    print("DEBUG: No open questions found, trying any status...")
+                    for post in posts["results"][:3]:  # Just first 3 for testing
+                        if question := post.get("question"):
+                            print(
+                                f"DEBUG: Found question (any status) - ID: {question['id']}\nQ: {question['title']}\nStatus: {question.get('status')}"
+                            )
+                            open_question_id_post_id.append(
+                                (question["id"], post["id"])
+                            )
+            except Exception as e:
+                print(f"Error fetching general questions: {e}")
 
     return open_question_id_post_id
 
@@ -300,7 +402,6 @@ async def get_binary_gpt_prediction(
             background=background,
             resolution_criteria=resolution_criteria,
             fine_print=fine_print,
-            summary_report=summary_report,
         )
     )
 
@@ -843,31 +944,32 @@ async def forecast_questions(
     num_runs_per_question: int,
     skip_previously_forecasted_questions: bool,
 ) -> None:
-    forecast_tasks = [
-        forecast_individual_question(
-            question_id,
-            post_id,
-            submit_prediction,
-            num_runs_per_question,
-            skip_previously_forecasted_questions,
-        )
-        for question_id, post_id in open_question_id_post_id
-    ]
-    forecast_summaries = await asyncio.gather(*forecast_tasks, return_exceptions=True)
-    print("\n", "#" * 100, "\nForecast Summaries\n", "#" * 100)
+    print("\n", "#" * 100, "\nProcessing Questions Sequentially\n", "#" * 100)
 
+    forecast_summaries = []
     errors = []
-    for question_id_post_id, forecast_summary in zip(
-        open_question_id_post_id, forecast_summaries
-    ):
-        question_id, post_id = question_id_post_id
-        if isinstance(forecast_summary, Exception):
-            print(
-                f"-----------------------------------------------\nPost {post_id} Question {question_id}:\nError: {forecast_summary.__class__.__name__} {forecast_summary}\nURL: https://www.metaculus.com/questions/{post_id}/\n"
+
+    for i, (question_id, post_id) in enumerate(open_question_id_post_id, 1):
+        print(f"\n--- Processing Question {i}/{len(open_question_id_post_id)} ---")
+        try:
+            forecast_summary = await forecast_individual_question(
+                question_id,
+                post_id,
+                submit_prediction,
+                num_runs_per_question,
+                skip_previously_forecasted_questions,
             )
-            errors.append(forecast_summary)
-        else:
+            forecast_summaries.append(forecast_summary)
             print(forecast_summary)
+        except Exception as e:
+            error_msg = f"-----------------------------------------------\nPost {post_id} Question {question_id}:\nError: {e.__class__.__name__} {e}\nURL: https://www.metaculus.com/questions/{post_id}/\n"
+            print(error_msg)
+            errors.append(e)
+            forecast_summaries.append(error_msg)
+
+    print("\n", "#" * 100, "\nForecast Summaries\n", "#" * 100)
+    for summary in forecast_summaries:
+        print(summary)
 
     if errors:
         print("-----------------------------------------------\nErrors:\n")
