@@ -3,7 +3,7 @@ name: Forecast on Quarterly Cup
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 */2 * *" # runs at midnight every 2 days
+    - cron: "10 * * * *" # runs every hour at 10 minutes past the hour
 
 # Add concurrency group to prevent parallel runs
 concurrency:
