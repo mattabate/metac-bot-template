@@ -10,7 +10,7 @@ async def call_research(question: str) -> str:
         await page.goto("https://research.joseph.ma/")
 
         await asyncio.sleep(3)
-        await page.waitForSelector('form textarea[name="prompt"]', timeout=30000)
+        await page.waitForSelector('form textarea[name="prompt"]', timeout=90000)
         await page.type('form textarea[name="prompt"]', question, {"delay": 50})
 
         # Wait for button to be enabled with timeout
@@ -74,7 +74,7 @@ async def call_research(question: str) -> str:
             "div.flex.flex-col.border.border-gray-200.rounded-lg.shadow-md.min-h-0.flex-1.transition-all.duration-300.ease-in-out > "
             "div.flex-grow.overflow-auto.p-4.min-h-0"
         )
-        await page.waitForSelector(response_selector, timeout=30000)
+        await page.waitForSelector(response_selector, timeout=90000)
         response_text = await page.querySelectorEval(
             response_selector, "(el) => el.innerText"
         )
