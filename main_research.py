@@ -381,6 +381,7 @@ async def run_research(question: str, max_retries: int = 2) -> str:
                 print(
                     "All research attempts failed due to timeout. Returning fallback message."
                 )
+                exit()
                 return "Research timed out after multiple attempts. No additional research data available."
 
         except Exception as e:
@@ -391,6 +392,7 @@ async def run_research(question: str, max_retries: int = 2) -> str:
                 await asyncio.sleep(5)
             else:
                 print("All research attempts failed. Returning fallback message.")
+                exit()
                 return f"Research failed after multiple attempts. Error: {str(e)}"
 
 
