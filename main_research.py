@@ -346,9 +346,9 @@ async def call_llm(prompt: str, model: str = "gpt-4o", temperature: float = 0.3)
 async def run_research(question: str, max_retries: int = 2) -> str:
     """
     Run research with timeout and retry mechanism.
-    Will timeout after 35 minutes and retry up to max_retries times.
+    Will timeout after 22 minutes and retry up to max_retries times.
     """
-    timeout_minutes = 35
+    timeout_minutes = 19
     timeout_seconds = timeout_minutes * 60
 
     for attempt in range(max_retries + 1):
@@ -1139,6 +1139,6 @@ if __name__ == "__main__":
             open_question_id_post_id,
             SUBMIT_PREDICTION,
             NUM_RUNS_PER_QUESTION,
-            SKIP_PREVIOUSLY_FORECASTED_QUESTIONS,
+            SKIP_PREVIOUSLY_FORECASTED_QUESTIONS and SUBMIT_PREDICTION,
         )
     )

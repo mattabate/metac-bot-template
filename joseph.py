@@ -11,6 +11,30 @@ BROWSERBASE_API_KEY = os.getenv("BROWSERBASE_API_KEY")
 BROWSERBASE_PROJECT_ID = os.getenv("BROWSERBASE_PROJECT_ID")
 
 
+async def wait_for_console_message(page, text, timeout=30000):
+    """
+    Waits for a specific console message to appear on the page.
+    """
+    future = asyncio.get_event_loop().create_future()
+
+    # Define the handler function
+    def handle_console_message(msg):
+        if text in msg.text:
+            if not future.done():
+                future.set_result(msg.text)
+
+    # Add the listener
+    page.on("console", handle_console_message)
+
+    try:
+        await asyncio.wait_for(future, timeout=timeout / 1000)
+    finally:
+        # Remove the listener by using remove_listener
+        page.remove_listener("console", handle_console_message)
+
+    return future.result()
+
+
 async def call_research(question: str) -> str:
     bb = Browserbase(api_key=BROWSERBASE_API_KEY)
     session = bb.sessions.create(project_id=BROWSERBASE_PROJECT_ID)
@@ -25,7 +49,7 @@ async def call_research(question: str) -> str:
 
         try:
             await page.goto("https://research.joseph.ma/")
-            await asyncio.sleep(3)
+            await wait_for_console_message(page, "Loaded Pillow", timeout=90000)
             await page.wait_for_selector('form textarea[name="prompt"]', timeout=90000)
             await page.fill('form textarea[name="prompt"]', question)
 
@@ -50,24 +74,34 @@ async def call_research(question: str) -> str:
 
             while True:
                 try:
-                    await page.wait_for_selector(status_selector, timeout=10000)
-                    status_text = await page.eval_on_selector(
-                        status_selector, "el => el.textContent"
-                    )
+                    element_handle = await page.query_selector(status_selector)
+                    if element_handle:
+                        status_text = await element_handle.text_content()
 
-                    current_time = asyncio.get_event_loop().time()
-                    if current_time - last_status_update > 120:
-                        elapsed_minutes = int((current_time - research_start_time) / 60)
-                        print(
-                            f"Research in progress... Status: {status_text} (elapsed: {elapsed_minutes} minutes)"
-                        )
-                        last_status_update = current_time
+                        current_time = asyncio.get_event_loop().time()
+                        if current_time - last_status_update > 120:
+                            elapsed_minutes = int(
+                                (current_time - research_start_time) / 60
+                            )
+                            print(
+                                f"Research in progress... Status: {status_text} (elapsed: {elapsed_minutes} minutes)"
+                            )
+                            last_status_update = current_time
 
-                    if status_text and "Done!" in status_text:
-                        break
+                        if status_text:
+                            if "Done!" in status_text:
+                                print("Research completed successfully.")
+                                break
+                            elif "Awaiting user input" in status_text:
+                                print(
+                                    "Research failed - status is 'Awaiting user input'. Restarting research..."
+                                )
+                                raise RuntimeError("Research failed - restart needed")
 
-                except asyncio.TimeoutError:
-                    pass
+                except Exception as e:
+                    # Log or handle any errors, but don’t fail hard
+                    print(f"Warning: error checking status - {e}")
+
                 await asyncio.sleep(2)
 
             await asyncio.sleep(5)
@@ -77,12 +111,17 @@ async def call_research(question: str) -> str:
                 "div.flex.flex-col.border.border-gray-200.rounded-lg.shadow-md.min-h-0.flex-1.transition-all.duration-300.ease-in-out > "
                 "div.flex-grow.overflow-auto.p-4.min-h-0"
             )
-            await page.wait_for_selector(response_selector, timeout=90000)
+            await page.wait_for_selector(response_selector, timeout=180000)
             response_text = await page.eval_on_selector(
                 response_selector, "el => el.innerText"
             )
 
             return response_text
+
+        except RuntimeError as e:
+            # Optionally, implement recursive retry logic here or handle at a higher level
+            print(f"Research attempt failed: {e}")
+            raise e
 
         finally:
             await browser.close()
