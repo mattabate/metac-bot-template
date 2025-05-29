@@ -35,6 +35,36 @@ async def wait_for_console_message(page, text, timeout=30000):
     return future.result()
 
 
+async def scrape_response(page):
+    report_selector = (
+        "body > div > div.flex.flex-col.w-full.md\\:w-1\\/2.space-y-4.flex-shrink-0 > "
+        "div.flex.flex-col.border.border-gray-200.rounded-lg.shadow-md.min-h-0.flex-1.transition-all.duration-300.ease-in-out > "
+        "div.flex-grow.overflow-auto.p-4.min-h-0"
+    )
+
+    chat_container_selector = (
+        "body > div > div.flex.flex-col.w-full.md\\:w-1\\/2.space-y-4.flex-shrink-0 > "
+        "div.relative.flex.flex-col.border.border-gray-200.rounded-lg.shadow-md.overflow-hidden.flex-1.transition-\\[flex-grow\\].duration-300.ease-in-out > "
+        "div.overflow-auto.p-4.flex-1"
+    )
+
+    try:
+        # First, wait briefly to see if the report appears
+        await page.wait_for_selector(report_selector, timeout=5000)
+        response_text = await page.eval_on_selector(
+            report_selector, "el => el.innerText"
+        )
+        return response_text
+    except:
+        # If report not found, fallback to grabbing the last message
+        last_child_selector = f"{chat_container_selector} > div:last-child"
+        await page.wait_for_selector(last_child_selector, timeout=5000)
+        response_text = await page.eval_on_selector(
+            last_child_selector, "el => el.innerText"
+        )
+        return response_text
+
+
 async def call_research(question: str) -> str:
     bb = Browserbase(api_key=BROWSERBASE_API_KEY)
     session = bb.sessions.create(project_id=BROWSERBASE_PROJECT_ID)
@@ -105,18 +135,8 @@ async def call_research(question: str) -> str:
                 await asyncio.sleep(2)
 
             await asyncio.sleep(5)
-
-            response_selector = (
-                "body > div > div.flex.flex-col.w-full.md\\:w-1\\/2.space-y-4.flex-shrink-0 > "
-                "div.flex.flex-col.border.border-gray-200.rounded-lg.shadow-md.min-h-0.flex-1.transition-all.duration-300.ease-in-out > "
-                "div.flex-grow.overflow-auto.p-4.min-h-0"
-            )
-            await page.wait_for_selector(response_selector, timeout=180000)
-            response_text = await page.eval_on_selector(
-                response_selector, "el => el.innerText"
-            )
-
-            return response_text
+            result = await scrape_response(page)
+            return result
 
         except RuntimeError as e:
             # Optionally, implement recursive retry logic here or handle at a higher level
