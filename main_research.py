@@ -22,7 +22,7 @@ from prompts import (
 
 ######################### CONSTANTS #########################
 # Constants
-SUBMIT_PREDICTION = False  # set to True to publish your predictions to Metaculus
+SUBMIT_PREDICTION = True  # set to True to publish your predictions to Metaculus
 USE_EXAMPLE_QUESTIONS = False  # set to True to forecast example questions rather than the tournament questions
 NUM_RUNS_PER_QUESTION = 3  # The median/average forecast is taken between NUM_RUNS_PER_QUESTION runs (each with independent research)
 SKIP_PREVIOUSLY_FORECASTED_QUESTIONS = True
@@ -1139,6 +1139,6 @@ if __name__ == "__main__":
             open_question_id_post_id,
             SUBMIT_PREDICTION,
             NUM_RUNS_PER_QUESTION,
-            SKIP_PREVIOUSLY_FORECASTED_QUESTIONS and SUBMIT_PREDICTION,
+            SKIP_PREVIOUSLY_FORECASTED_QUESTIONS,
         )
     )
