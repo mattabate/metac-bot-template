@@ -3,7 +3,8 @@ name: Forecast on Quarterly Cup
 on:
   workflow_dispatch:
   schedule:
-    - cron: "10 * * * *" # runs every hour at 10 minutes past the hour
+    - cron: "* * 32 * *" # runs on the 32nd day of every month, which is never, so this job will not run automatically
+    # - cron: "10 * * * *" # runs every hour at 10 minutes past the hour
 
 # Add concurrency group to prevent parallel runs
 concurrency:
